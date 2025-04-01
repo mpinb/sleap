@@ -6,6 +6,8 @@ import attr
 import numpy as np
 import lazy_loader
 
+from tqdm import tqdm
+
 cv2 = lazy_loader.load("cv2")
 import functools
 from typing import Callable, Deque, Dict, Iterable, List, Optional, Tuple
@@ -1521,7 +1523,8 @@ def run_tracker(frames: List[LabeledFrame], tracker: BaseTracker) -> List[Labele
     new_lfs = []
 
     # Run tracking on every frame
-    for lf in frames:
+    for lf in tqdm(frames, desc="Tracking frames", unit="frame"):
+    #for lf in frames:
 
         # Clear the tracks
         for inst in lf.instances:
