@@ -5262,6 +5262,12 @@ def _make_cli_parser() -> argparse.ArgumentParser:
         default=False,
         help="Collect statistics during tracking.",
     )
+    parser.add_argument(
+        "--tracking.post_connect_multiple_breaks",
+        action="store_true",
+        default=False,
+        help="Connect multiple track breaks in the same video using track centroid during post-processing.",
+    )
 
     # Deprecated legacy args. These will still be parsed for backward compatibility but
     # are hidden from the CLI help.
