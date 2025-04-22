@@ -14,6 +14,7 @@ from typing import Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
 from sleap import Track, LabeledFrame, Skeleton
 
+#TODO: add flag to the tracker to set the post-processsing option to connect_multiple_track_breaks
 from sleap.nn.tracker.components import (
     factory_object_keypoint_similarity,
     instance_similarity,
@@ -25,6 +26,7 @@ from sleap.nn.tracker.components import (
     cull_instances,
     cull_frame_instances,
     connect_single_track_breaks,
+    connect_multiple_track_breaks,
     InstanceType,
     FrameMatches,
     Match,
@@ -394,7 +396,7 @@ class FlowMaxTracksCandidateMaker(FlowCandidateMaker):
                 if item.t == ref_t and np.all(item.img_t == ref_img)
             ]
         return instances
-
+    
     def get_candidates(
         self,
         track_matching_queue_dict: Dict[Track, Deque[MatchedFrameInstance]],
@@ -830,6 +832,8 @@ class Tracker(BaseTracker):
             self.cleaner.run(frames)
         elif self.target_instance_count and self.post_connect_single_breaks:
             connect_single_track_breaks(frames, self.target_instance_count)
+        elif self.target_instance_count and self.post_connect_multiple_breaks:
+            connect_multiple_track_breaks(frames, self.target_instance_count)
 
     def get_name(self):
         tracker_name = self.candidate_maker.__class__.__name__
@@ -1505,27 +1509,83 @@ class TrackCleaner:
         connect_single_track_breaks(frames, self.instance_count)
 
 
-def run_tracker(frames: List[LabeledFrame], tracker: BaseTracker) -> List[LabeledFrame]:
+# def run_tracker(frames: List[LabeledFrame], tracker: BaseTracker) -> List[LabeledFrame]:
+#     """Run a tracker on a set of labeled frames.
+
+#     Args:
+#         frames: A list of labeled frames with instances.
+#         tracker: An initialized Tracker.
+
+#     Returns:
+#         The input frames with the new tracks assigned. If the frames already had tracks,
+#         they will be cleared if the tracker has been re-initialized.
+#     """
+#     # Return original frames if we aren't retracking
+#     if not tracker.is_valid:
+#         return frames
+
+#     new_lfs = []
+
+#     # Run tracking on every frame
+#     for lf in tqdm(frames, desc="Tracking frames", unit="frame"):
+#     #for lf in frames:
+
+#         # Clear the tracks
+#         for inst in lf.instances:
+#             inst.track = None
+
+#         track_args = dict(untracked_instances=lf.instances)
+#         if tracker.uses_image:
+#             track_args["img"] = lf.video[lf.frame_idx]
+#         else:
+#             track_args["img"] = None
+#         track_args["img_hw"] = lf.image.shape[-3:-1]
+
+#         new_lf = LabeledFrame(
+#             frame_idx=lf.frame_idx,
+#             video=lf.video,
+#             instances=tracker.track(**track_args),
+#         )
+#         new_lfs.append(new_lf)
+
+#     return new_lfs
+
+from typing import List, Union, Tuple
+from collections import defaultdict
+import time
+import pandas as pd
+from tqdm import tqdm
+
+def run_tracker(
+    frames: List[LabeledFrame], 
+    tracker: BaseTracker, 
+    show_progress: bool = False,
+    collect_stats: bool = False
+) -> Union[List[LabeledFrame], Tuple[List[LabeledFrame], pd.DataFrame]]:
     """Run a tracker on a set of labeled frames.
 
     Args:
         frames: A list of labeled frames with instances.
         tracker: An initialized Tracker.
+        show_progress: Whether to show a progress bar during tracking. Default is False.
+        collect_stats: Whether to collect tracking statistics. Default is False.
 
     Returns:
-        The input frames with the new tracks assigned. If the frames already had tracks,
-        they will be cleared if the tracker has been re-initialized.
+        If collect_stats is False: The input frames with the new tracks assigned.
+        If collect_stats is True: A tuple of (frames with new tracks, tracking statistics DataFrame).
+        
+        If the frames already had tracks, they will be cleared if the tracker has been re-initialized.
     """
     # Return original frames if we aren't retracking
     if not tracker.is_valid:
         return frames
 
     new_lfs = []
+    tracking_stats = defaultdict(list) if collect_stats else None
 
     # Run tracking on every frame
-    for lf in tqdm(frames, desc="Tracking frames", unit="frame"):
-    #for lf in frames:
-
+    for lf in tqdm(frames, desc="Tracking frames", unit="frame", disable=not show_progress):
+        
         # Clear the tracks
         for inst in lf.instances:
             inst.track = None
@@ -1537,14 +1597,40 @@ def run_tracker(frames: List[LabeledFrame], tracker: BaseTracker) -> List[Labele
             track_args["img"] = None
         track_args["img_hw"] = lf.image.shape[-3:-1]
 
+        # Track timing if collecting stats
+        if collect_stats:
+            tracking_start_time = time.time()
+            instances = tracker.track(**track_args)
+            tracking_time = time.time() - tracking_start_time
+        else:
+            instances = tracker.track(**track_args)
+
         new_lf = LabeledFrame(
             frame_idx=lf.frame_idx,
             video=lf.video,
-            instances=tracker.track(**track_args),
+            instances=instances,
         )
         new_lfs.append(new_lf)
+        
+        # Collect statistics if enabled
+        if collect_stats:
+            num_instances = len(instances)
+            num_tracked = sum(1 for inst in instances if inst.track is not None)
+            
+            # Store frame statistics
+            tracking_stats['frame_idx'].append(lf.frame_idx)
+            tracking_stats['tracking_time_ms'].append(tracking_time * 1000)  # Convert to ms
+            tracking_stats['num_instances'].append(num_instances)
+            tracking_stats['num_tracked'].append(num_tracked)
+            tracking_stats['tracking_success_rate'].append(
+                num_tracked / num_instances if num_instances > 0 else 0
+            )
 
-    return new_lfs
+    # Return appropriate result based on collect_stats flag
+    if collect_stats:
+        return new_lfs, pd.DataFrame(tracking_stats)
+    else:
+        return new_lfs, None
 
 
 def retrack():

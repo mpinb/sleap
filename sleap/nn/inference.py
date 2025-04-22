@@ -46,6 +46,7 @@ from typing import Text, Optional, List, Dict, Union, Iterator, Tuple
 from threading import Thread
 from queue import Queue
 
+import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
 
@@ -2655,7 +2656,14 @@ class TopDownPredictor(Predictor):
 
         finally:
             prediction_queue.put(None)
+            # Timing the build objects duration
+            import time
+            start = time.time()
+            print("Waiting for object builder to finish...")
+            # flush the print buffer
+            sys.stdout.flush()
             object_builder.join()
+            print(f"Time to build objects: {time.time() - start:.2f} seconds")
 
         if self.tracker:
             self.tracker.final_pass(predicted_frames)
@@ -5240,6 +5248,20 @@ def _make_cli_parser() -> argparse.ArgumentParser:
             "Not available for ID models. Defaults to None."
         ),
     )
+    
+    # The following arguments control the progress_bar and the collect_stats during tracking
+    parser.add_argument(
+        "--tracking.show_progress",
+        action="store_true",
+        default=False,
+        help="Show progress bar during tracking.",
+    )
+    parser.add_argument(
+        "--tracking.collect_stats",
+        action="store_true",
+        default=False,
+        help="Collect statistics during tracking.",
+    )
 
     # Deprecated legacy args. These will still be parsed for backward compatibility but
     # are hidden from the CLI help.
@@ -5499,6 +5521,22 @@ def _make_tracker_from_cli(args: argparse.Namespace) -> Optional[Tracker]:
         return tracker
     return None
 
+# Disabling warning messages from PySide6 and shiboken
+import warnings
+
+# Suppress specific RuntimeWarnings from the shibokensupport.signature.parser module
+warnings.filterwarnings(
+    "ignore",
+    message=r".*pyside_type_init:_resolve_value.*",
+    category=RuntimeWarning,
+    module=r"shibokensupport\.signature\.parser"
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*pyside_type_init:_resolve_type.*",
+    category=RuntimeWarning,
+    module=r"shibokensupport\.signature\.parser"
+)
 
 def main(args: Optional[list] = None):
     """Entrypoint for `sleap-track` CLI for running inference.
@@ -5512,7 +5550,7 @@ def main(args: Optional[list] = None):
 
     # Setup CLI.
     parser = _make_cli_parser()
-
+    
     # Parse inputs.
     args, _ = parser.parse_known_args(args)
     print("Args:")
@@ -5643,7 +5681,7 @@ def main(args: Optional[list] = None):
 
             # Save results.
             try:
-                labels_pr.save(output_path)
+                labels_pr.save(output_path) #FIXME: This line is causing PySide6 RuntimeWarning messages
             except Exception:
                 print("WARNING: Provided output path invalid.")
                 fallback_path = data_path_obj.with_suffix(".predictions.slp")
@@ -5668,8 +5706,44 @@ def main(args: Optional[list] = None):
         frames = sorted(labels_pr.labeled_frames, key=lambda lf: lf.frame_idx)
 
         print("Starting tracker...")
-        frames = run_tracker(frames=frames, tracker=tracker)
+        #frames = run_tracker(frames=frames, tracker=tracker)
+        show_progress = getattr(args, "tracking.show_progress")
+        collect_stats = getattr(args, "tracking.collect_stats")
+        frames, tracking_stats = run_tracker(frames, tracker=tracker, show_progress=show_progress, collect_stats=collect_stats)
         tracker.final_pass(frames)
+        
+        # Plotting a timeline of the tracking time for each frame and the tracking success rate in the same plot
+        if collect_stats:
+            #tracking_stats_df = pd.DataFrame(tracking_stats)
+            fig, ax1 = plt.subplots()
+            ax2 = ax1.twinx()
+            ax1.plot(tracking_stats['frame_idx'], tracking_stats['tracking_time_ms'], 'g-')
+            ax2.plot(tracking_stats['frame_idx'], tracking_stats['tracking_success_rate'], 'b-')
+
+            ax1.set_xlabel('Frame Index')
+            ax1.set_ylabel('Tracking Time (ms)', color='g')
+            ax2.set_ylabel('Tracking Success Rate', color='b')
+            
+            # Create the plot legend using all the tracking parameters in args that are not None
+            legend = []
+            excluded_keys = ['show_progress', 'collect_stats']
+            # Iterate over all keys in args
+            for key, value in vars(args).items():
+                # Check if the key starts with 'tracking.' and is not in the excluded list
+                if key.startswith('tracking.') and key not in excluded_keys and value is not None:
+                    # Remove the 'tracking.' prefix for display
+                    display_key = key[len('tracking.'):]
+                    legend.append(f'{display_key}: {value}')
+            ax1.legend(legend, loc='upper left')
+            tracker_name = getattr(args, "tracking.tracker")
+            ax1.set_title(f'Tracking Time and Success Rate for {tracker_name}')
+            
+            # Save the plot
+            plt.savefig(f'tracking_stats_tracker_{tracker_name}.png')
+            print(f"Tracking statistics saved to tracking_stats_tracker_{tracker_name}.png")
+            
+            # Show the plot (if there is display)
+            plt.show()
 
         labels_pr = Labels(labeled_frames=frames)
 

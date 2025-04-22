@@ -464,6 +464,125 @@ def connect_single_track_breaks(
 
     return frames
 
+def connect_multiple_track_breaks(
+    frames: List["LabeledFrame"], instance_count: int, distance_threshold: float = 50.0
+) -> List["LabeledFrame"]:
+    """
+    Merges breaks in tracks by connecting lost tracks with new tracks based on spatial proximity.
+
+    Args:
+        frames: The list of `LabeledFrame` objects with predictions.
+        instance_count: The maximum number of instances we want per frame.
+        distance_threshold: Maximum distance between centroids to consider them a match.
+
+    Returns:
+        Updated list of frames, also modifies frames in place.
+    """
+    if not frames:
+        return frames
+
+    # Track mapping for fixes
+    fix_track_map = dict()
+    
+    # Initialize track information from first frame
+    last_good_frame_tracks = {}
+    for inst in frames[0].instances:
+        track = inst.track
+        # Update the track's centroid with the instance's centroid
+        track.last_centroid = inst.centroid
+        last_good_frame_tracks[track] = track
+    
+    import tqdm
+    for lf in tqdm.tqdm(frames[1:], desc="Connecting track breaks"):
+        # Get current frame track information
+        frame_tracks = {}
+        for inst in lf.instances:
+            # Update track's centroid with current instance centroid
+            inst.track.last_centroid = inst.centroid
+            frame_tracks[inst.track] = inst
+        
+        # Apply previous fixes if needed
+        tracks_fixed_before = set(frame_tracks.keys()).intersection(set(fix_track_map.keys()))
+        if tracks_fixed_before:
+            for inst in lf.instances:
+                if (
+                    inst.track in fix_track_map
+                    and fix_track_map[inst.track] not in frame_tracks
+                ):
+                    inst.track = fix_track_map[inst.track]
+                    # Update frame_tracks after the fix
+            
+            # Rebuild frame_tracks
+            frame_tracks = {}
+            for inst in lf.instances:
+                frame_tracks[inst.track] = inst
+
+        # Find extra and missing tracks
+        extra_tracks = set(frame_tracks.keys()) - set(last_good_frame_tracks.keys())
+        missing_tracks = set(last_good_frame_tracks.keys()) - set(frame_tracks.keys())
+        
+        # Log warnings
+        if extra_tracks:
+            logger.warning(
+                f"Extra tracks found in frame {lf.frame_idx}: {[t.name for t in extra_tracks]}"
+            )
+        if missing_tracks:
+            logger.warning(
+                f"Missing tracks found in frame {lf.frame_idx}: {[t.name for t in missing_tracks]}"
+            )
+
+        # Single track case (original behavior)
+        if len(extra_tracks) == 1 and len(missing_tracks) == 1:
+            extra_track = list(extra_tracks)[0]
+            missing_track = list(missing_tracks)[0]
+            
+            for inst in lf.instances:
+                if inst.track == extra_track:
+                    fix_track_map[extra_track] = missing_track
+                    inst.track = missing_track
+                    break
+                    
+        # Multiple track case (new behavior)
+        elif len(extra_tracks) == instance_count and len(missing_tracks) == instance_count:
+            # For each extra track, find the closest missing track
+            if len(extra_tracks) == len(missing_tracks):
+                # Calculate distance matrix between all extra and missing tracks
+                distances = {}
+                for extra_track in extra_tracks:
+                    extra_inst = frame_tracks[extra_track]
+                    for missing_track in missing_tracks:
+                        # Calculate distance between the instance's centroid and the last known
+                        # centroid of the missing track
+                        if missing_track.last_centroid is not None:
+                            distance = np.linalg.norm(extra_inst.centroid - missing_track.last_centroid)
+                            distances[(extra_track, missing_track)] = distance
+                
+                # Sort distances and match tracks greedily
+                matched_missing = set()
+                sorted_pairs = sorted(distances.keys(), key=lambda pair: distances[pair])
+                
+                for extra_track, missing_track in sorted_pairs:
+                    if missing_track in matched_missing:
+                        continue
+                    
+                    if distances[(extra_track, missing_track)] <= distance_threshold:
+                        matched_missing.add(missing_track)
+                        fix_track_map[extra_track] = missing_track
+                        
+                        # Update the track for the instance
+                        for inst in lf.instances:
+                            if inst.track == extra_track:
+                                inst.track = missing_track
+                                break
+        
+        # Update last good frame tracks if we have the expected number of instances
+        if len(set(inst.track for inst in lf.instances)) == instance_count:
+            last_good_frame_tracks = {}
+            for inst in lf.instances:
+                last_good_frame_tracks[inst.track] = inst.track
+
+    return frames
+
 
 @attr.s(auto_attribs=True, slots=True)
 class Match:

@@ -316,10 +316,12 @@ class Track:
     Args:
         spawned_on: The video frame that this track was spawned on.
         name: A name given to this track for identifying purposes.
+        last_centroid: The centroid of the last instance associated with this track.
     """
 
     spawned_on: int = attr.ib(default=0, converter=int)
     name: str = attr.ib(default="", converter=str)
+    last_centroid: np.ndarray = attr.ib(default=None)
 
     def matches(self, other: "Track"):
         """
@@ -332,6 +334,20 @@ class Track:
             True if they match, False otherwise.
         """
         return attr.asdict(self) == attr.asdict(other)
+    
+    def centroid_distance(self, other: "Track") -> float:
+        """
+        Calculate the Euclidean distance between the centroids of two tracks.
+        
+        Args:
+            other: The other track to compare with
+            
+        Returns:
+            The Euclidean distance between centroids or float('inf') if centroids aren't available
+        """
+        if self.last_centroid is None or other.last_centroid is None:
+            return float('inf')
+        return np.linalg.norm(self.last_centroid - other.last_centroid)
 
 
 # NOTE:
